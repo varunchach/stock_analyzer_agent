@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>TradeSetu — AI Stock Analyzer</title>
+<link rel="stylesheet" href="/style.css" />
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">TS</span>
+    <div class="brand-text">
+      <h1>TradeSetu</h1>
+      <p>Agentic Stock Analyzer — built for students</p>
+    </div>
+  </div>
+  <div class="header-right">
+    <div class="badges">
+      <span class="pill">Live Market Data</span>
+      <span class="pill">Guardrailed</span>
+      <span class="pill">Traced</span>
+    </div>
+    <button id="new-chat-btn" class="new-chat-btn" title="Start a new conversation">+ New chat</button>
+  </div>
+</header>
+
+<main class="chat-app">
+  <div id="chat-messages" class="chat-messages">
+    <div id="empty-state" class="empty-state">
+      <div class="empty-icon">📈</div>
+      <h2>Ask about any stock — and keep the conversation going</h2>
+      <p>This is a real conversation: ask a follow-up like <em>"What about its dividend?"</em> and the agent remembers the stock you were just discussing.</p>
+      <div class="chips">
+        <button class="chip" data-q="Tell me about TCS stock, what's its potential right now?">TCS</button>
+        <button class="chip" data-q="Should I look at Reliance shares?">Reliance</button>
+        <button class="chip" data-q="Give me a full analysis of Infosys stock">Infosys</button>
+        <button class="chip" data-q="What's the outlook for HDFC Bank?">HDFC Bank</button>
+        <button class="chip" data-q="Analyze Tata Motors stock potential">Tata Motors</button>
+      </div>
+    </div>
+  </div>
+
+  <form id="query-form" class="query-form">
+    <input
+      id="query-input"
+      type="text"
+      placeholder="Ask about a stock, or ask a follow-up..."
+      autocomplete="off"
+      maxlength="500"
+      required
+    />
+    <button type="submit" id="submit-btn">Send</button>
+  </form>
+</main>
+
+<footer>
+  <p>Educational demo · Not investment advice · Data via Yahoo Finance &amp; Tavily · Traced with LangSmith</p>
+</footer>
+
+<script src="/app.js"></script>
+</body>
+</html>
