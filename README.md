@@ -11,11 +11,18 @@ This README is written so a **newbie can follow it top-to-bottom on their own
 machine** and understand not just *what* to type, but *why* each piece
 exists.
 
-> No UI screenshot is included — a generated mockup wouldn't accurately
-> represent the real thing. Run the app (Section 5) and see it yourself: a
-> dark, chat-style interface, not a dashboard of static cards. Real
-> **observability** screenshots from this app's actual LangSmith project —
-> traces, cost, and an error caught in production — are in Section 7.
+**What it actually looks like** — a real conversation, mid-answer:
+
+![TradeSetu chat UI — full answer](docs/assets/ui_chat_full_answer.png)
+
+And the live "agent activity" trace inside that same reply, showing every
+tool call as it happened plus the guardrail badges once it's done:
+
+![TradeSetu chat UI — agent activity trace](docs/assets/ui_agent_activity.png)
+
+> Real **observability** screenshots from this app's actual LangSmith
+> project — traces, cost, and an error caught in production — are in
+> Section 7.
 
 ---
 
