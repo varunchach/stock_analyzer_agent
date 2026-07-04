@@ -1,6 +1,6 @@
 # TradeSetu — Agentic Stock Analyzer
 
-A student tutorial: **build a real, production-shaped agentic AI web app**
+**Build a real, production-shaped agentic AI web app**
 from zero — an assistant that takes a plain-English question like *"Tell me
 about TCS stock, what's its potential right now?"*, resolves the ticker,
 pulls **live** market data, searches the web, and returns a grounded
