@@ -35,9 +35,10 @@ tool call as it happened plus the guardrail badges once it's done:
 5. [Run it](#5-run-it)
 6. [Test it — a guided walkthrough](#6-test-it--a-guided-walkthrough)
 7. [Watching it think: logs & LangSmith tracing](#7-watching-it-think-logs--langsmith-tracing)
-8. [Troubleshooting](#8-troubleshooting)
-9. [Glossary — concepts used in this app](#9-glossary--concepts-used-in-this-app)
-10. [Exercises — extend it yourself](#10-exercises--extend-it-yourself)
+8. [Evaluating output quality: the LangSmith eval framework](#8-evaluating-output-quality-the-langsmith-eval-framework)
+9. [Troubleshooting](#9-troubleshooting)
+10. [Glossary — concepts used in this app](#10-glossary--concepts-used-in-this-app)
+11. [Exercises — extend it yourself](#11-exercises--extend-it-yourself)
 
 ---
 
@@ -189,6 +190,10 @@ stock_analyzer/
 │       ├── input_guard.py          # Safety + scope checks
 │       └── output_guard.py         # Phrase filter + disclaimer
 ├── static/                   # index.html / style.css / app.js      (Step 10)
+├── evals/
+│   ├── dataset.py                   # Curated LangSmith eval dataset  (Section 8)
+│   ├── evaluators.py                # Code + LLM-as-judge criteria
+│   └── run_eval.py                  # Entry point: python -m evals.run_eval
 ├── logs/app.log               # Written at runtime, gitignored
 ├── .env                        # Your real secrets, gitignored
 ├── .env.example                 # Placeholders, safe to commit
@@ -209,7 +214,7 @@ Then install every package this app needs, in one shot:
 
 ```bash
 pip install fastapi "uvicorn[standard]" pydantic python-dotenv \
-            langchain langchain-core langchain-openai langchain-tavily langgraph \
+            langchain langchain-core langchain-openai langchain-tavily langgraph langsmith \
             yfinance pandas
 ```
 
@@ -598,7 +603,7 @@ sector, and alternates — exactly the JSON contract described in Step 6.
 
 At **$0.0029 for the most expensive turn**, a full classroom session of a
 few dozen queries costs a small fraction of a cent — this is what "cheapest
-model that still supports tool calling" (Section 2.3) looks like in
+model that still supports tool calling" (Section 2.4, row 2) looks like in
 measured reality, not just a pricing page.
 
 **The monitoring dashboard** — cost and token usage aggregated over time,
@@ -608,7 +613,83 @@ useful for spotting a runaway loop or an unexpectedly expensive query:
 
 ---
 
-## 8. Troubleshooting
+## 8. Evaluating output quality: the LangSmith eval framework
+
+Tracing (Section 7) tells you *what happened* on one request. This section
+is different — it's a **repeatable test suite** that runs the whole app
+against a curated set of questions and grades every answer against an
+explicit rubric, so you can tell if a code change made quality better or
+worse *before* students see it.
+
+### Why two kinds of criteria
+
+An LLM's output can't be checked with `assert answer == expected_text` —
+the wording changes every run. So the framework (`evals/`) uses two kinds
+of checks:
+
+| Kind | Examples | Why |
+|---|---|---|
+| **Code evaluators** (`evals/evaluators.py`, `CODE_EVALUATORS`) | Correct ticker resolved, right guardrail stage, minimum tool calls, disclaimer present | Fast, free, deterministic — no LLM needed to grade these |
+| **LLM-as-judge evaluators** (`LLM_JUDGE_EVALUATORS`) | Groundedness, balanced view, hedged recommendation, relevance, refusal quality | These are about *judgment*, not exact matching — a second LLM call (the same cheap `gpt-5-nano`) grades the answer against a strict rubric and returns `PASS`/`FAIL` + a one-line reason |
+
+### The dataset (`evals/dataset.py`)
+
+17 curated examples, each `{"inputs": {"query": ...}, "outputs": {<criteria>}}`
+— the `outputs` are **not** literal expected text, they're structured
+expectations the evaluators check against (e.g. `expected_ticker: "TCS.NS"`,
+`min_tools: 3`). Covers:
+
+- Normal full-analysis queries across different companies and phrasings
+- The `S6` financial-advice regression case (Section 2.4, row 3) — makes sure
+  it stays allowlisted
+- Off-topic and unsafe queries that must stay blocked
+- A nonsense ticker that should trigger clarification, not fabrication
+- An empty query (validation edge case)
+
+### Running it
+
+```bash
+python -m evals.run_eval
+```
+
+This creates the dataset in LangSmith (idempotent — reuses it if it already
+exists), runs **every example through the real `run_pipeline`** — the exact
+same guardrails → agent → guardrails path a live request takes — grades
+each with all 10 evaluators, and uploads the results as a new **experiment**
+under **Datasets & Experiments** in LangSmith.
+
+### What we found the first time we ran it
+
+Real output, not a hypothetical — 17/17 examples on 8 of 10 criteria, with
+two genuine misses:
+
+| Criterion | Result | What it caught |
+|---|---|---|
+| `relevance` | 16/17 | *"Predict Reliance stock price next quarter"* — the agent gave a qualitative outlook instead of a specific numeric price target. Arguably the **responsible** behavior (avoiding false-precision predictions), but it didn't fully satisfy the literal question — a good example of an eval catching a genuine judgment call, not just a bug |
+| `ticker_grounded` | 16/17 | *"Analyze Tata Motors stock potential"* resolved to `TMPV.NS` (Tata Motors **Passenger Vehicles**) instead of the dataset's expected `TATAMOTORS.NS` — because Tata Motors underwent a real corporate demerger. This is exactly what an eval suite is *for*: catching drift between your reference data and reality over time |
+
+Neither failure was a code bug. That's the point — a good eval suite
+surfaces genuine edge cases and lets *you* decide whether the reference
+data or the behavior needs to change, instead of guessing from a handful of
+manual tests.
+
+### Extending it
+
+- **Add a new criterion:** write a function in `evals/evaluators.py`
+  matching the code-evaluator signature (`(outputs, reference_outputs) -> dict`)
+  or the judge pattern (`(inputs, outputs, reference_outputs) -> dict`),
+  then add it to `ALL_EVALUATORS`.
+- **Add a new example:** append to `EXAMPLES` in `evals/dataset.py`. Delete
+  the dataset in the LangSmith UI first if you want it fully rebuilt (the
+  script only creates it if it's missing, it won't sync edits to an
+  existing dataset).
+- **Compare two experiments:** LangSmith's dataset view lets you diff
+  experiment runs side by side — run the eval before and after a prompt
+  change and see exactly which examples flipped pass/fail.
+
+---
+
+## 9. Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
@@ -623,7 +704,7 @@ useful for spotting a runaway loop or an unexpectedly expensive query:
 
 ---
 
-## 9. Glossary — concepts used in this app
+## 10. Glossary — concepts used in this app
 
 | Term | In one sentence |
 |---|---|
@@ -635,11 +716,13 @@ useful for spotting a runaway loop or an unexpectedly expensive query:
 | **Structured logging** | Writing logs as machine-parseable JSON instead of free-text sentences |
 | **Streaming (SSE)** | Sending partial results to the browser as they happen, instead of making the user wait for the entire response |
 | **Checkpointer** | What LangGraph uses to remember prior messages in the same conversation thread |
+| **Eval / evaluator** | A function that scores an AI system's output against a rubric — either exact code checks, or an LLM grading another LLM's answer ("LLM-as-judge") |
+| **Experiment** | One full run of the eval dataset through the app, with every example scored — LangSmith lets you compare experiments side by side to see if a change helped or hurt |
 | **OpenAI-compatible endpoint** | An API that accepts the same request/response shape as OpenAI's, even if a different model is actually running behind it |
 
 ---
 
-## 10. Exercises — extend it yourself
+## 11. Exercises — extend it yourself
 
 1. **New tool:** Add `compare_peers(symbol, peer)` to `tools_market.py` that
    fetches two fundamental snapshots side by side. Register it in
@@ -656,6 +739,14 @@ useful for spotting a runaway loop or an unexpectedly expensive query:
    OpenAI-compatible provider — confirm the rest of the app needs zero code
    changes. (This app actually did this for real — see row 2 of the table in
    section 2.4.)
+6. **Fix the Tata Motors eval failure:** decide whether `TMPV.NS` is
+   actually correct now (it is, post-demerger) and update the expected
+   ticker in `evals/dataset.py`, or add a `resolve_ticker` disambiguation
+   rule for combined-entity company names. Re-run `python -m evals.run_eval`
+   and confirm `ticker_grounded` goes to 17/17.
+7. **Add your own eval criterion:** write a new LLM-as-judge evaluator (e.g.
+   "does the answer avoid hedging so much it becomes unhelpful?") and add
+   it to `ALL_EVALUATORS` in `evals/evaluators.py`.
 
 ---
 
