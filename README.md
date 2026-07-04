@@ -122,41 +122,16 @@ flowchart LR
 `"What's the capital of France?"` → safe, but caught by **scope**.
 Only genuinely safe *and* on-topic questions reach the agent.
 
-> **Real lesson — malformed model output:** open-weight "reasoning" models
-> like `gpt-oss` use an internal chat format ("harmony") separating
-> reasoning/tool-call/final-answer sections. The serving backend usually
-> parses this into clean `tool_calls` — but occasionally the model leaks
-> raw markup (`<|channel|>...<|message|>`) with **fabricated results** and
-> zero real `tool_calls`. A naive pipeline would show that garbage as the
-> final answer. `app/pipeline.py` detects these markers
-> (`MALFORMED_OUTPUT_MARKERS`) and retries automatically
-> (`MAX_AGENT_RETRIES`, tuned from a measured ~7% per-turn failure rate —
-> see `docs/test_maas_tool_parsing.py`), verified both live and with a
-> mocked retry test. **Lesson:** never trust LLM output just because
-> `tool_calls` is empty — validate the shape of what came back.
+### 2.4 Real bugs we hit building this (and how they were fixed)
 
-> **Why the main LLM provider changed:** this app originally ran MaaS-hosted
-> `gpt-oss-120b`. The diagnostic above measured a ~7% per-turn failure rate,
-> reproduced via raw curl *and* the real production agent with wire-level
-> capture — including one perfectly well-formed request that still got back
-> `finish_reason: "tool_calls"` with **non-null, fabricated** content: a
-> protocol violation, not a bug on our side. We moved the main LLM to
-> OpenAI's `gpt-5-nano` (cheapest tool-calling-capable model) and kept
-> **Llama Guard on the original MaaS endpoint**, since it showed no issues —
-> proving the two concerns can use entirely different providers with zero
-> coupling, because `app/llm.py` treats them as independent clients from
-> day one.
+These aren't hypothetical examples — each was found by actually testing the
+running app, root-caused, and fixed in the code you're reading.
 
-> **Real lesson — a guardrail conflicting with the app's own purpose:**
-> Llama Guard's `S6: Specialized Advice` category flags financial/medical/
-> legal advice-seeking text as "unsafe" by default — e.g. *"Should I buy or
-> sell TCS stock?"* — a direct conflict with this app's purpose. The fix
-> wasn't removing the safety check; it's recognizing the **output guardrail
-> already enforces** what `S6` protects against (disclaimer, hedged
-> language, no guarantee claims). So `S6` is explicitly allowlisted
-> (`ALLOWED_SAFETY_CATEGORIES` in `policies.py`) while every other category
-> still hard-blocks. **Lesson:** test guardrails against your own domain's
-> real questions, not just obviously-bad examples.
+| # | What broke | Root cause | Fix | Lesson |
+|---|---|---|---|---|
+| 1 | A full answer occasionally contained raw text like `<|channel|>...<|message|>` with fabricated numbers instead of a real answer | Open-weight "reasoning" models (e.g. `gpt-oss`) use an internal "harmony" chat format. The serving backend usually parses it into clean `tool_calls` — but occasionally leaked the raw markup instead, with a fabricated tool result and **zero real `tool_calls`** | `app/pipeline.py` detects these markers (`MALFORMED_OUTPUT_MARKERS`) and retries automatically (`MAX_AGENT_RETRIES`) — verified live and with a mocked retry test | Never trust LLM output just because `tool_calls` is empty — validate the shape of what came back |
+| 2 | The bug above kept recurring on ~7% of turns | Root-caused with `docs/test_maas_tool_parsing.py`: raw curl *and* the real production agent (wire-level capture) both showed a perfectly well-formed request still getting back `finish_reason: "tool_calls"` with non-null, fabricated content — a protocol violation on the provider's side, not our code | Moved the main LLM to OpenAI's `gpt-5-nano` (cheapest tool-calling-capable model); kept **Llama Guard on the original MaaS endpoint**, since it had no issues | Different concerns (reasoning vs. safety classification) can use entirely different providers — because `app/llm.py` treats them as independent clients from day one |
+| 3 | A normal question — *"Should I buy or sell TCS stock?"* — got blocked as "unsafe" | Llama Guard's `S6: Specialized Advice` category flags financial/medical/legal advice-seeking text by default, which directly conflicts with this app's entire purpose | Explicitly allowlisted `S6` (`ALLOWED_SAFETY_CATEGORIES` in `policies.py`), since the **output guardrail already enforces** what `S6` protects against (disclaimer, hedged language, no guarantee claims). Every other category still hard-blocks | Test guardrails against your own domain's real questions, not just obviously-bad examples |
 
 ---
 
@@ -182,7 +157,38 @@ so you understand the dependency chain: config → tools → agent → guardrail
 → API → UI. Each step references the real file so you can open it side by
 side.
 
-### Step 1 — Project skeleton & virtual environment
+### What you're building toward
+
+Keep this folder tree open in another tab — every step below adds one or
+two files to it, so you always know where you are:
+
+```
+stock_analyzer/
+├── app/
+│   ├── main.py              # FastAPI app, routes, middleware       (Step 9)
+│   ├── config.py            # Loads .env, fails fast if missing     (Step 3)
+│   ├── logging_config.py    # Structured JSON logging               (Step 4)
+│   ├── llm.py                # LLM + guardrail-model factory        (Step 5)
+│   ├── errors.py             # Custom exceptions → safe HTTP errors (Step 9)
+│   ├── schemas.py            # Pydantic request/response models    (Step 9)
+│   ├── pipeline.py           # guardrails → agent → guardrails      (Step 9)
+│   ├── agent/
+│   │   ├── tools_ticker.py         # Company name → ticker          (Step 6)
+│   │   ├── tools_market.py         # Live quote/fundamentals/technicals
+│   │   ├── tools_research.py       # Tavily-backed news/sentiment
+│   │   └── graph.py                # The LangGraph agent itself     (Step 7)
+│   └── guardrails/
+│       ├── policies.py             # Rules — the only file with "what's allowed" (Step 8)
+│       ├── input_guard.py          # Safety + scope checks
+│       └── output_guard.py         # Phrase filter + disclaimer
+├── static/                   # index.html / style.css / app.js      (Step 10)
+├── logs/app.log               # Written at runtime, gitignored
+├── .env                        # Your real secrets, gitignored
+├── .env.example                 # Placeholders, safe to commit
+└── requirements.txt
+```
+
+### Step 1 — Project skeleton, virtual environment, dependencies
 
 ```bash
 mkdir stock_analyzer && cd stock_analyzer
@@ -191,6 +197,17 @@ source .venv/bin/activate
 mkdir -p app/agent app/guardrails static logs
 touch app/__init__.py app/agent/__init__.py app/guardrails/__init__.py
 ```
+
+Then install every package this app needs, in one shot:
+
+```bash
+pip install fastapi "uvicorn[standard]" pydantic python-dotenv \
+            langchain langchain-core langchain-openai langchain-tavily langgraph \
+            yfinance pandas
+```
+
+(This exact list is also saved in `requirements.txt` — once you have it,
+future setup is just `pip install -r requirements.txt`.)
 
 **Why a virtual environment?** It isolates this project's Python packages
 from your system Python — nothing gets installed system-wide.
@@ -213,7 +230,8 @@ LANGSMITH_TRACING=false
 
 Note the main LLM and the guardrail model each have their **own**
 `_BASE_URL`/`_API_KEY`/`_MODEL` — they're independent clients on purpose, so
-they can live on entirely different providers (see the callout in section 2.3).
+they can live on entirely different providers (see row 2 of the table in
+section 2.4).
 
 **Why this matters:** hardcoded keys end up in git history, screenshots, and
 error logs. A `.env` file that's gitignored is the standard fix — see
@@ -378,12 +396,40 @@ def run_pipeline(query, thread_id, trace_id) -> AnalyzeResponse:
 **9c. Routes + error handling + logging middleware** (`app/main.py`) — a
 middleware assigns a `trace_id` to every request and logs start/finish with
 duration; a custom exception handler turns any `AppError` into a clean JSON
-error instead of a stack trace.
+error instead of a stack trace. The three real routes:
+
+```python
+@app.get("/health", response_model=HealthResponse)
+async def health():
+    return HealthResponse(status="ok", llm_model=settings.llm_model, guard_model=settings.guard_model)
+
+@app.post("/api/v1/analyze", response_model=AnalyzeResponse)
+async def analyze(payload: AnalyzeRequest, request: Request):
+    return run_pipeline(payload.query, payload.thread_id or request.state.trace_id, request.state.trace_id)
+
+@app.post("/api/v1/analyze/stream")
+async def analyze_stream(payload: AnalyzeRequest, request: Request):
+    def event_source():
+        for event in stream_pipeline(payload.query, payload.thread_id or request.state.trace_id, request.state.trace_id):
+            yield f"data: {json.dumps(event, default=str)}\n\n"
+    return StreamingResponse(event_source(), media_type="text/event-stream")
+```
 
 **9d. Streaming** — `POST /api/v1/analyze/stream` iterates
 `agent.stream(..., stream_mode="updates")`, which yields each tool call as
 it happens, and forwards it to the browser as Server-Sent Events. This is
 what powers the live "agent activity" panel in the UI.
+
+**9e. Serving the UI from the same app** (`app/main.py`, last line) — no
+separate frontend server needed:
+
+```python
+app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
+```
+
+This must be the **last** route registered — FastAPI matches routes in
+registration order, so `/health` and `/api/v1/*` are tried first, and only
+unmatched paths fall through to serving static files.
 
 ### Step 10 — The UI (`static/`) — a real conversation, not one-shot analysis
 
@@ -447,7 +493,7 @@ activity" trace inside the assistant's reply:
 | 5 | `Analyze Tata Motors stock potential` | Full analysis on a different sector (auto) |
 | 6 | `What is the capital of France?` | Blocked immediately — flagged as off-topic (scope guardrail) |
 | 7 | Anything violent or harmful | Blocked immediately — flagged for safety (Llama Guard) |
-| 8 | `Should I buy or sell TCS stock?` | **Allowed**, not blocked — see the `S6` callout in Section 2.3 for why this specific phrasing needed a deliberate guardrail exception |
+| 8 | `Should I buy or sell TCS stock?` | **Allowed**, not blocked — see row 3 of the table in Section 2.4 for why this specific phrasing needed a deliberate guardrail exception |
 | 9 | `Tell me about stock XYZABC123NOTREAL` | The agent tries `resolve_ticker`, fails to find a match, and asks you to clarify instead of guessing a price |
 
 ### A real conversation (this is the point of the chat UI)
@@ -563,8 +609,8 @@ useful for spotting a runaway loop or an unexpectedly expensive query:
 | Requests hang for a long time | LLM/Tavily is genuinely working — a full analysis calls 5-6 tools sequentially | Normal; usually 15-30 seconds. Watch the "Agent activity" panel for progress |
 | Everything gets blocked as "off-topic" | Your question has no finance keywords **and** the LLM scope check disagreed | Rephrase mentioning a company, ticker, or the word "stock"/"invest" |
 | `422` error on submit | Empty or >500-character query | Pydantic validation — shorten or fill in the question |
-| A normal stock question gets blocked as "unsafe" | Llama Guard's `S6: Specialized Advice` category flags financial-advice phrasing by default | Already fixed in this codebase — see `ALLOWED_SAFETY_CATEGORIES` in `app/guardrails/policies.py` and the callout above. If you add a new safety-classifier model, re-test this scenario |
-| Answer contains raw text like `<|channel|>analysis<|message|>...` with fabricated numbers | The underlying model occasionally leaks its internal "harmony" chat-template format instead of a real tool call — see the callout below | Already fixed — `app/pipeline.py` detects this and automatically retries (`MAX_AGENT_RETRIES` in `policies.py`) before ever showing it to the user |
+| A normal stock question gets blocked as "unsafe" | Llama Guard's `S6: Specialized Advice` category flags financial-advice phrasing by default | Already fixed in this codebase — see row 3 in the table in Section 2.4 (`ALLOWED_SAFETY_CATEGORIES` in `app/guardrails/policies.py`). If you add a new safety-classifier model, re-test this scenario |
+| Answer contains raw text like `<|channel|>analysis<|message|>...` with fabricated numbers | The underlying model occasionally leaks its internal "harmony" chat-template format instead of a real tool call — see row 1 in Section 2.4 | Already fixed — `app/pipeline.py` detects this and automatically retries (`MAX_AGENT_RETRIES` in `policies.py`) before ever showing it to the user |
 | Port already in use | A previous run is still listening on 8000 | `lsof -i :8000` to find the PID, then stop it, or use `--port 8001` |
 | Browser shows blank page | Server not running, or wrong port | Confirm the terminal shows `Application startup complete` and you're on the same port |
 
@@ -601,8 +647,8 @@ useful for spotting a runaway loop or an unexpectedly expensive query:
    a previously-blocked phrasing now passes the fast heuristic path.
 5. **Swap providers:** Point `LLM_BASE_URL`/`LLM_MODEL` at a different
    OpenAI-compatible provider — confirm the rest of the app needs zero code
-   changes. (This app actually did this for real — see the "Why the main LLM
-   provider changed" callout in section 2.3.)
+   changes. (This app actually did this for real — see row 2 of the table in
+   section 2.4.)
 
 ---
 
