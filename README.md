@@ -11,10 +11,11 @@ This README is written so a **newbie can follow it top-to-bottom on their own
 machine** and understand not just *what* to type, but *why* each piece
 exists.
 
-> No screenshot is included here on purpose — a generated mockup doesn't
-> match the real UI closely enough to be trustworthy. Run the app (Section 5)
-> and see the actual thing; it's a dark, chat-style interface, not a
-> dashboard of static cards.
+> No UI screenshot is included — a generated mockup wouldn't accurately
+> represent the real thing. Run the app (Section 5) and see it yourself: a
+> dark, chat-style interface, not a dashboard of static cards. Real
+> **observability** screenshots from this app's actual LangSmith project —
+> traces, cost, and an error caught in production — are in Section 7.
 
 ---
 
@@ -121,54 +122,41 @@ flowchart LR
 `"What's the capital of France?"` → safe, but caught by **scope**.
 Only genuinely safe *and* on-topic questions reach the agent.
 
-> **Another real lesson we hit building this:** open-weight "reasoning"
-> models like `gpt-oss` use an internal chat format ("harmony") with
-> reasoning/tool-call/final-answer sections. Almost always the serving
-> backend parses this correctly into real `tool_calls` — but occasionally
-> the model hallucinates a **fake** tool call as plain text (leaking markup
-> like `<|channel|>...<|message|>`) *and fabricates fake results for it*,
-> with zero real `tool_calls` in the API response. A naive pipeline would
-> just print this garbage as the "final answer." `app/pipeline.py` detects
-> these leaked markers (`MALFORMED_OUTPUT_MARKERS` in `policies.py`) and
-> automatically retries the agent call (`MAX_AGENT_RETRIES`, default 3 —
-> tuned from measured ~7% per-turn failure rate, see `docs/test_maas_tool_parsing.py`)
-> before ever showing a response to the user — verified with both a live
-> reproduction and a mocked test that forces a malformed-then-clean retry.
-> **Lesson:** never trust raw LLM output as "the answer" just because
+> **Real lesson — malformed model output:** open-weight "reasoning" models
+> like `gpt-oss` use an internal chat format ("harmony") separating
+> reasoning/tool-call/final-answer sections. The serving backend usually
+> parses this into clean `tool_calls` — but occasionally the model leaks
+> raw markup (`<|channel|>...<|message|>`) with **fabricated results** and
+> zero real `tool_calls`. A naive pipeline would show that garbage as the
+> final answer. `app/pipeline.py` detects these markers
+> (`MALFORMED_OUTPUT_MARKERS`) and retries automatically
+> (`MAX_AGENT_RETRIES`, tuned from a measured ~7% per-turn failure rate —
+> see `docs/test_maas_tool_parsing.py`), verified both live and with a
+> mocked retry test. **Lesson:** never trust LLM output just because
 > `tool_calls` is empty — validate the shape of what came back.
 
-> **Why the main LLM provider changed:** this app originally ran on a
-> MaaS-hosted `gpt-oss-120b`. After the leak above kept recurring, we
-> measured its real reliability with a dedicated diagnostic script
-> (`docs/test_maas_tool_parsing.py`) that simulates full multi-turn
-> tool-calling conversations against the raw API — bypassing LangChain
-> entirely — and found roughly a **7% per-turn failure rate**, reproduced
-> both via raw curl *and* via the real production agent with wire-level
-> request/response capture. The clean proof: a perfectly well-formed
-> request (verified by inspecting the exact JSON sent) still occasionally
-> got back `finish_reason: "tool_calls"` with a **non-null, fabricated**
-> `content` field — a protocol-level contract violation, not a prompt or
-> code issue on our side. We moved the main LLM to OpenAI (`gpt-5-nano` —
-> currently the cheapest OpenAI model that still fully supports tool
-> calling) and kept the **guardrail model (Llama Guard) on the original
-> MaaS endpoint**, since it showed no reliability issues — proving the two
-> concerns (reasoning/tool-calling vs. safety classification) can use
-> entirely different providers with zero coupling, exactly because
-> `app/llm.py` treats them as two independent clients from day one.
+> **Why the main LLM provider changed:** this app originally ran MaaS-hosted
+> `gpt-oss-120b`. The diagnostic above measured a ~7% per-turn failure rate,
+> reproduced via raw curl *and* the real production agent with wire-level
+> capture — including one perfectly well-formed request that still got back
+> `finish_reason: "tool_calls"` with **non-null, fabricated** content: a
+> protocol violation, not a bug on our side. We moved the main LLM to
+> OpenAI's `gpt-5-nano` (cheapest tool-calling-capable model) and kept
+> **Llama Guard on the original MaaS endpoint**, since it showed no issues —
+> proving the two concerns can use entirely different providers with zero
+> coupling, because `app/llm.py` treats them as independent clients from
+> day one.
 
-> **A real lesson we hit building this:** Llama Guard's safety taxonomy has
-> a category `S6: Specialized Advice` that flags **financial, medical, or
-> legal advice-seeking text** as "unsafe" — e.g. *"Should I buy or sell TCS
-> stock?"* gets flagged `S6` by default. That's a direct conflict with a
-> stock-analysis app's entire purpose. The fix isn't to remove the safety
-> check — it's to recognize that our **output guardrail already enforces**
-> what `S6` exists to protect against (mandatory disclaimer, hedged
-> "leaning" language, no "guaranteed return" claims). So `S6` is explicitly
-> allowlisted in `policies.py` (`ALLOWED_SAFETY_CATEGORIES = {"S6"}`) while
-> every other category (violence, weapons, self-harm, hate, etc.) still
-> hard-blocks. This is a good example of why you should always **test your
-> guardrails against your own domain's real questions**, not just against
-> obviously-bad examples.
+> **Real lesson — a guardrail conflicting with the app's own purpose:**
+> Llama Guard's `S6: Specialized Advice` category flags financial/medical/
+> legal advice-seeking text as "unsafe" by default — e.g. *"Should I buy or
+> sell TCS stock?"* — a direct conflict with this app's purpose. The fix
+> wasn't removing the safety check; it's recognizing the **output guardrail
+> already enforces** what `S6` protects against (disclaimer, hedged
+> language, no guarantee claims). So `S6` is explicitly allowlisted
+> (`ALLOWED_SAFETY_CATEGORIES` in `policies.py`) while every other category
+> still hard-blocks. **Lesson:** test guardrails against your own domain's
+> real questions, not just obviously-bad examples.
 
 ---
 
@@ -510,12 +498,60 @@ because LangChain/LangGraph read those environment variables on their own.
 
 1. Go to **[smith.langchain.com](https://smith.langchain.com)** and sign in
 2. Open the project matching your `LANGSMITH_PROJECT` value
-3. Ask a question in the UI, then refresh the LangSmith project — you'll see
-   a new trace tree: the agent's reasoning steps, each tool call with its
-   inputs/outputs, latency per step, and the final answer
+3. Ask a question in the UI, then refresh — you'll see a new trace: the
+   agent's reasoning steps, each tool call with inputs/outputs, latency per
+   step, and the final answer
 
 This is the single best way to *see* what "agentic" actually means — you're
 watching the model decide, in real time, which tool to call next.
+
+### What this actually looks like — real traces from this app
+
+These are screenshots from this project's own LangSmith dashboard, not
+staged examples.
+
+**The traces list** — every request run through the app, in order, with
+latency and errors visible at a glance:
+
+![LangSmith traces list](docs/assets/langsmith_traces_list.png)
+
+Two rows worth pointing out, because both are exactly what tracing is *for*:
+- `Tell me how to pr...` → `ai: unsafe S1` — a real request the **safety
+  guardrail** blocked before the agent ever ran (1.07s, no tool calls)
+- `Reply with exactl...` → `Error: APIConnectionError` — a real transient
+  upstream failure, caught and handled rather than crashing the app (this is
+  the "handle runtime errors in AI pipelines" objective, visible as an
+  actual production event, not a hypothetical)
+
+**Drilling into one trace** — a 3-turn HDFC Bank conversation in the same
+thread, each turn showing latency, token count, and cost:
+
+![LangSmith trace detail](docs/assets/langsmith_trace_detail.png)
+
+Real, measured numbers from that conversation:
+
+| Turn | Latency | Tokens | Cost |
+|---|---|---|---|
+| 1 — "Tell me about HDFC Bank's stock outlook..." | 42.8s | 19.9K | $0.0029 |
+| 2 — follow-up in the same thread | 20.0s | 17K | $0.0013 |
+| 3 — follow-up in the same thread | 14.6s | 17K | $0.0010 |
+
+Notice latency and cost **drop** on later turns — the agent already has
+prior tool results in context, so it calls fewer tools to answer a
+follow-up. The expanded message view shows the actual mechanics: the `AI`
+message calls `resolve_ticker(company_or_symbol="HDFC Bank")`, and the
+`TOOL` message returns the real resolved symbol (`HDFCBANK.NS`), exchange,
+sector, and alternates — exactly the JSON contract described in Step 6.
+
+At **$0.0029 for the most expensive turn**, a full classroom session of a
+few dozen queries costs a small fraction of a cent — this is what "cheapest
+model that still supports tool calling" (Section 2.3) looks like in
+measured reality, not just a pricing page.
+
+**The monitoring dashboard** — cost and token usage aggregated over time,
+useful for spotting a runaway loop or an unexpectedly expensive query:
+
+![LangSmith monitoring dashboard](docs/assets/langsmith_monitoring.png)
 
 ---
 
